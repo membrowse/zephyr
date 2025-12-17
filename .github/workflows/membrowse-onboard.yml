@@ -1,0 +1,125 @@
+name: Onboard to Membrowse
+
+on:
+  workflow_dispatch:
+    inputs:
+      num_commits:
+        description: 'Number of commits to process'
+        required: true
+        default: '100'
+        type: string
+      commit_offset:
+        description: 'Number of commits to go back from HEAD before starting onboarding'
+        required: false
+        default: '0'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONTAINER_IMAGE: ghcr.io/zephyrproject-rtos/ci-repo-cache:v0.28.7.20251127
+
+jobs:
+  load-targets:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Load target matrix
+        id: set-matrix
+        run: echo "matrix=$(jq -c '.' .github/membrowse-targets.json)" >> $GITHUB_OUTPUT
+
+  onboard:
+    needs: load-targets
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.load-targets.outputs.matrix) }}
+
+    steps:
+      - name: Free disk space
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/apache/arrow/main/ci/scripts/util_free_space.sh | bash
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Apply commit offset
+        if: ${{ github.event.inputs.commit_offset != '0' }}
+        run: git checkout HEAD~${{ github.event.inputs.commit_offset }}
+
+      - name: Pull container image
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull ${{ env.CONTAINER_IMAGE }} && break
+            echo "Attempt $i failed, retrying in 30s..."
+            sleep 30
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/requirements-actions.txt
+
+      - name: Install Python packages
+        run: pip install -r scripts/requirements-actions.txt --require-hashes
+
+      - name: Set up ccache
+        run: |
+          mkdir -p ${{ github.workspace }}/.ccache
+          echo "max_size = 10G" > ${{ github.workspace }}/.ccache/ccache.conf
+          echo "compression = true" >> ${{ github.workspace }}/.ccache/ccache.conf
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.target_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.target_name }}-
+
+      - name: Run Membrowse Onboard Action
+        uses: membrowse/membrowse-action/onboard-action@main
+        with:
+          target_name: ${{ matrix.target_name }}
+          num_commits: ${{ github.event.inputs.num_commits }}
+          build_script: |
+            docker run --rm \
+              -v ${{ github.workspace }}:/repo-cache/zephyrproject/zephyr \
+              -v ${{ github.workspace }}/.ccache:/ccache \
+              -w /repo-cache/zephyrproject/zephyr \
+              -e ZEPHYR_TOOLCHAIN_VARIANT=zephyr \
+              -e ZEPHYR_SDK_INSTALL_DIR=/opt/toolchains/zephyr-sdk-0.17.0 \
+              -e ZEPHYR_BASE=/repo-cache/zephyrproject/zephyr \
+              -e CCACHE_DIR=/ccache \
+              -e USE_CCACHE=1 \
+              -e GIT_CONFIG_COUNT=1 \
+              -e GIT_CONFIG_KEY_0=safe.directory \
+              -e "GIT_CONFIG_VALUE_0=*" \
+              ${{ env.CONTAINER_IMAGE }} \
+              ${{ matrix.build_cmd }}
+          elf: ${{ matrix.elf }}
+          ld: ${{ matrix.ld }}
+          linker_vars: ${{ matrix.linker_vars }}
+          api_key: ${{ secrets.MEMBROWSE_API_KEY }}
+
+      - name: Upload linker.cmd for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linker-${{ matrix.target_name }}
+          path: ${{ matrix.ld }}
+          if-no-files-found: ignore
