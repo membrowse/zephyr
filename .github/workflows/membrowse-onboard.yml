@@ -114,6 +114,8 @@ jobs:
           elf: ${{ matrix.elf }}
           ld: ${{ matrix.ld }}
           linker_vars: ${{ matrix.linker_vars }}
+          build_dirs: ${{ join(matrix.repo_dirs, ' ') }}
+          initial_commit: ${{ matrix.initial_commit }}
           api_key: ${{ secrets.MEMBROWSE_API_KEY }}
 
       - name: Upload linker.cmd for debugging
