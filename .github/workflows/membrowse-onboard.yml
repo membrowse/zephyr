@@ -117,6 +117,7 @@ jobs:
           build_dirs: ${{ join(matrix.repo_dirs, ' ') }}
           initial_commit: ${{ matrix.initial_commit }}
           api_key: ${{ secrets.MEMBROWSE_API_KEY }}
+          api_url: ${{ secrets.MEMBROWSE_URL }}
 
       - name: Upload linker.cmd for debugging
         if: always()
